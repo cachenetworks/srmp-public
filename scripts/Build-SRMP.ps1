@@ -4,6 +4,7 @@ param(
     [ValidateSet('SRML', 'SRML NoVer', 'Debug', 'Release', 'Standalone', 'Standalone NoVer')]
     [string]$Configuration = 'SRML',
     [switch]$Package,
+    [switch]$Install,
     [string]$Version = 'dev'
 )
 
@@ -32,8 +33,9 @@ function Get-SteamLibraryPaths {
         'HKLM:\SOFTWARE\Valve\Steam'
     )) {
         try {
-            $value = (Get-ItemProperty -LiteralPath $key -ErrorAction Stop).SteamPath
-            if (-not $value) { $value = (Get-ItemProperty -LiteralPath $key -ErrorAction Stop).InstallPath }
+            $props = Get-ItemProperty -LiteralPath $key -ErrorAction Stop
+            $value = $props.SteamPath
+            if (-not $value) { $value = $props.InstallPath }
             if ($value) { $steamRoots.Add([IO.Path]::GetFullPath($value)) }
         } catch { }
     }
@@ -97,6 +99,7 @@ function Find-MSBuild {
 $resolvedGame = Find-GamePath
 $managedDir = Join-Path $resolvedGame 'SlimeRancher_Data\Managed'
 $srmlLibDir = Join-Path $resolvedGame 'SRML\Libs'
+$modsDir = Join-Path $resolvedGame 'SRML\Mods'
 
 if (-not (Test-Path -LiteralPath $srmlLibDir -PathType Container)) {
     throw "SRML is not installed correctly. Expected: $srmlLibDir"
@@ -127,6 +130,7 @@ $createdReferences = New-Object System.Collections.Generic.List[string]
 try {
     Write-Host "Using Slime Rancher: $resolvedGame"
     Write-Host "Using SRML libraries: $srmlLibDir"
+    Write-Host "SRML mods directory: $modsDir"
 
     foreach ($name in $requiredReferences) {
         $destination = Join-Path $projectDir $name
@@ -175,6 +179,29 @@ try {
 
     $hash = (Get-FileHash -LiteralPath $outputDll -Algorithm SHA256).Hash
     Write-Host "SRMP.dll built successfully. SHA256: $hash"
+
+    if ($Install) {
+        $installerScript = Join-Path $repoRoot 'installer\Install-SRMP.ps1'
+        if (-not (Test-Path -LiteralPath $installerScript -PathType Leaf)) {
+            throw "Installer script is missing: $installerScript"
+        }
+
+        Write-Host 'Installing freshly built SRMP.dll into SRML\Mods...'
+        & $installerScript -GamePath $resolvedGame -SourceDll $outputDll
+        if ($LASTEXITCODE -ne 0) { throw "Installation failed with exit code $LASTEXITCODE" }
+
+        $installedDll = Join-Path $modsDir 'SRMP.dll'
+        if (-not (Test-Path -LiteralPath $installedDll -PathType Leaf)) {
+            throw "Installer completed but SRMP.dll is missing from: $installedDll"
+        }
+
+        $installedHash = (Get-FileHash -LiteralPath $installedDll -Algorithm SHA256).Hash
+        if ($installedHash -ne $hash) {
+            throw "Installed SRMP.dll hash mismatch. Built=$hash Installed=$installedHash"
+        }
+        Write-Host "Installed successfully: $installedDll"
+        Write-Host "Installed SHA256: $installedHash"
+    }
 
     if ($Package) {
         $packageScript = Join-Path $PSScriptRoot 'Package-Release.ps1'
