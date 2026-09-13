@@ -46,7 +46,7 @@ namespace SRMultiplayer.EpicSDK
                 return;
             }
 
-            Username = username;
+            Username = string.IsNullOrWhiteSpace(username) ? "SRMP Player" : username.Trim();
 
             var connectLoginOptions = new Epic.OnlineServices.Connect.LoginOptions()
             {
@@ -161,7 +161,7 @@ namespace SRMultiplayer.EpicSDK
         {
             if (ProductUserId == loginStatusChangedCallbackInfo.LocalUserId)
             {
-                if (loginStatusChangedCallbackInfo.PreviousStatus == LoginStatus.LoggedIn && loginStatusChangedCallbackInfo.CurrentStatus == LoginStatus.NotLoggedIn)
+                if (loginCallbackInfo.PreviousStatus == LoginStatus.LoggedIn && loginCallbackInfo.CurrentStatus == LoginStatus.NotLoggedIn)
                 {
                     IsLoggedIn = false;
 
@@ -173,7 +173,7 @@ namespace SRMultiplayer.EpicSDK
 
                     if (connectNotifyAuthExpirationId.HasValue)
                     {
-                        connectInterface.RemoveNotifyLoginStatusChanged(connectNotifyAuthExpirationId.Value);
+                        connectInterface.RemoveNotifyAuthExpiration(connectNotifyAuthExpirationId.Value);
                         connectNotifyAuthExpirationId = null;
                     }
                 }
