@@ -1458,6 +1458,10 @@
     <Compile Include="Packets\Players\PacketPlayerJoined.cs" />
     <Compile Include="Packets\Players\PacketPlayerLeft.cs" />
     <Compile Include="Packets\Players\PacketPlayerLoaded.cs" />
+    <Compile Include="Packets\Players\PacketNameSuggestions.cs" />
+    <Compile Include="Packets\Players\PacketPing.cs" />
+    <Compile Include="Packets\Players\PacketPong.cs" />
+    <Compile Include="Packets\Players\PacketPlayerPings.cs" />
     <Compile Include="Packets\Players\PacketPlayerPosition.cs" />
     <Compile Include="Packets\Regions\PacketRegionChange.cs" />
     <Compile Include="Packets\Regions\PacketRegionOwner.cs" />
@@ -1558,6 +1562,11 @@
       <DesignTime>True</DesignTime>
       <DependentUpon>AssemblyInfo.tt</DependentUpon>
     </Compile>
+    <Compile Include="Patches\PlayerInvulnerablePatch.cs" />
+    <Compile Include="Server\AutoHost.cs" />
+    <Compile Include="Server\AutoHostConfig.cs" />
+    <Compile Include="Server\BanList.cs" />
+    <Compile Include="Server\ServerCommands.cs" />
     <Compile Include="SRMP.cs" />
     <Compile Include="Console\SRMPConsole.cs" />
     <Compile Include="Utils\Compression.cs" />

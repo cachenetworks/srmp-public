@@ -23,6 +23,25 @@ namespace SRMultiplayer
         public static Dictionary<byte, NetworkPlayer> Players = new Dictionary<byte, NetworkPlayer>();
         public static string Username;
 
+        /// <summary>
+        /// Lobby capacity, including the host. EOS caps a lobby at 64; the mod
+        /// has historically shipped 16. Set before the lobby is created - EOS
+        /// fixes the size at creation time, so changing it later does nothing.
+        /// </summary>
+        public static int MaxPlayers = 16;
+
+        /// <summary>
+        /// Frame rate reported by the host. Shown next to the host in the player
+        /// list because it, not the network, sets the floor on everyone's ping.
+        /// </summary>
+        public static int HostFps;
+
+        /// <summary>
+        /// Names the server offered for tab completion that the client could not
+        /// work out locally - currently banned names, for /unban.
+        /// </summary>
+        public static List<string> SuggestedNames = new List<string>();
+
         public static string ServerCode
         {
             get

@@ -65,7 +65,11 @@ namespace SRMultiplayer.Networking
             Globals.EpicToPlayer.Add(EpicApplication.Instance.Authentication.ProductUserId, id);
             Globals.ClientLoaded = true;
 
-            Directory.CreateDirectory(Path.Combine(SRMP.ModDataPath, SRSingleton<GameContext>.Instance.AutoSaveDirector.SavedGame.GetName()));
+            var worldName = SRSingleton<GameContext>.Instance.AutoSaveDirector.SavedGame.GetName();
+            Directory.CreateDirectory(Path.Combine(SRMP.ModDataPath, worldName));
+
+            //bans belong to the world, so they follow whichever save is hosted
+            Server.BanList.LoadForWorld(worldName);
 
             foreach(var netRegion in Globals.Regions.Values)
             {
@@ -276,6 +280,18 @@ namespace SRMultiplayer.Networking
 
             var vr = im.ReadBoolean();
             
+            //checked before anything else accepts the player: the EOS id is
+            //observed by us during the handshake, so it cannot be forged by
+            //renaming or by editing client-side files
+            if (Globals.PlayerToEpic.TryGetValue(pid, out var epicId)
+                && Server.BanList.IsBanned(epicId.ToString()))
+            {
+                var ban = Server.BanList.Find(epicId.ToString());
+                SRMP.Log($"[Bans] Refused banned player {username} ({epicId})");
+                DisconnectCustom(player, $"You are banned from this world: {ban.Reason}");
+                return;
+            }
+
             if (build != Globals.Version)
             {
                 SRMP.Log($"Version Mismatch! YOU({Globals.Version}) vs PLAYER({build})");
@@ -333,6 +349,19 @@ namespace SRMultiplayer.Networking
         {
             if (Globals.EpicToPlayer.TryGetValue(remoteUserId, out var player))
             {
+                ReclaimPlayerOwnership(player);
+
+                if (Globals.Players.TryGetValue(player, out var leaving) && leaving != null)
+                {
+                    //the object outlives the dictionary entry otherwise, and stale
+                    //entries linger in every region's player list
+                    foreach (var region in leaving.Regions.ToList())
+                    {
+                        region.RemovePlayer(leaving);
+                    }
+                    UnityEngine.Object.Destroy(leaving.gameObject);
+                }
+
                 Globals.Players.Remove(player);
                 Globals.EpicToPlayer.Remove(remoteUserId);
                 Globals.PlayerToEpic.Remove(player);
@@ -341,6 +370,50 @@ namespace SRMultiplayer.Networking
                 {
                     ID = player
                 }.SendToAll();
+            }
+        }
+
+        /// <summary>
+        /// Hands everything a departing player was simulating back to the host.
+        /// Left alone these actors and regions stay owned by a player id that no
+        /// longer exists, so nobody simulates them and nobody can claim them.
+        /// </summary>
+        private void ReclaimPlayerOwnership(byte leavingId)
+        {
+            int actors = 0;
+            foreach (var actor in Globals.Actors.Values.ToList())
+            {
+                if (actor == null || actor.Owner != leavingId) continue;
+
+                actor.Owner = Globals.LocalID;
+                actors++;
+
+                new PacketActorOwner()
+                {
+                    ID = actor.ID,
+                    Owner = Globals.LocalID
+                }.SendToAll(NetDeliveryMethod.ReliableOrdered);
+            }
+
+            int regions = 0;
+            foreach (var region in Globals.Regions.Values.ToList())
+            {
+                if (region == null || region.Owner != leavingId) continue;
+
+                region.SetOwnership(Globals.LocalID);
+                regions++;
+
+                new PacketRegionOwner()
+                {
+                    ID = region.ID,
+                    Owner = Globals.LocalID
+                }.SendToAll(NetDeliveryMethod.ReliableOrdered);
+            }
+
+            if (actors > 0 || regions > 0)
+            {
+                SRMP.Log($"[Server] Reclaimed {actors} actor(s) and {regions} region(s) "
+                         + $"from departing player {leavingId}");
             }
         }
 

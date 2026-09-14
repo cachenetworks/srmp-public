@@ -126,5 +126,11 @@
         
         // Mod support - HolySlimes
         SpiritSlimeMode = 116,
+
+        // Latency measurement and the fast world-clock sync that rides on it
+        Ping = 117,
+        Pong = 118,
+        PlayerPings = 119,
+        NameSuggestions = 120,
     }
 }

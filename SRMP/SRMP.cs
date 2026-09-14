@@ -1,4 +1,5 @@
-﻿using MonomiPark.SlimeRancher.Persist;
+﻿using Lidgren.Network;
+using MonomiPark.SlimeRancher.Persist;
 using MonomiPark.SlimeRancher.Regions;
 using SRMultiplayer.Networking;
 using SRMultiplayer.Packets;
@@ -24,6 +25,125 @@ namespace SRMultiplayer
         public static string ModDataPath { get { return Path.Combine(Application.dataPath, "..", "SRMP"); } }
 
         private float m_LastTimeSync;
+        private float m_LastPing;
+        private float m_LastPingBroadcast;
+
+        /// <summary>How often each client pings the server, in seconds.</summary>
+        private const float PingInterval = 2f;
+
+        /// <summary>How often the server publishes everyone's ping, in seconds.</summary>
+        private const float PingBroadcastInterval = 3f;
+
+        /// <summary>
+        /// Smoothed round trip time in milliseconds. A single sample jitters
+        /// enough to be unreadable in a UI, so samples are blended.
+        /// </summary>
+        public static int SmoothedPing { get; private set; }
+
+        /// <summary>
+        /// When the server was last heard from. Used to notice a host that went
+        /// away without EOS ever reporting a clean disconnect.
+        /// </summary>
+        public static float LastServerContact { get; private set; }
+
+        /// <summary>
+        /// Seconds of silence from the server before a client gives up. Several
+        /// times the ping interval so ordinary packet loss never trips it.
+        /// </summary>
+        private const float ServerTimeoutSeconds = 20f;
+
+        /// <summary>
+        /// Smoothed local frame rate. On the host this is the tick rate of the
+        /// whole session: packets are only drained once per frame, so nobody's
+        /// round trip can beat the host's frame time.
+        /// </summary>
+        public static int MeasuredFps { get; private set; }
+
+        private static float m_FpsAccumulator;
+        private static int m_FpsFrames;
+
+        private static void SampleFps()
+        {
+            m_FpsAccumulator += Time.unscaledDeltaTime;
+            m_FpsFrames++;
+
+            if (m_FpsAccumulator >= 1f)
+            {
+                MeasuredFps = Mathf.RoundToInt(m_FpsFrames / m_FpsAccumulator);
+                m_FpsAccumulator = 0f;
+                m_FpsFrames = 0;
+
+                if (Globals.IsServer) Globals.HostFps = MeasuredFps;
+            }
+        }
+
+        /// <summary>Marks the server as alive right now.</summary>
+        public static void NoteServerContact()
+        {
+            LastServerContact = Time.realtimeSinceStartup;
+        }
+
+        /// <summary>
+        /// Tears the connection down and puts the player back on the main menu.
+        /// Staying loaded into a world whose host is gone looks like the game is
+        /// still running when nothing is being synchronised any more.
+        /// </summary>
+        public static void ReturnToMainMenu(string reason)
+        {
+            Log($"[SRMP] Leaving the session: {reason}");
+
+            try
+            {
+                NetworkClient.Instance?.Shutdown();
+            }
+            catch (Exception ex)
+            {
+                Log($"[SRMP] Error while shutting the client down\n{ex}");
+            }
+
+            Globals.GameLoaded = false;
+            Globals.ClientLoaded = false;
+
+            //without this the EOS lobby handle survives a crashed host and every
+            //later join or host attempt is refused as "already in a lobby"
+            try
+            {
+                EpicApplication.Instance?.Lobby?.ForceReset(reason);
+            }
+            catch (Exception ex)
+            {
+                Log($"[SRMP] Error resetting lobby state: {ex}");
+            }
+
+            //scene 2 is the main menu; scene 3 is the loaded world
+            if (SceneManager.GetActiveScene().buildIndex == 3)
+            {
+                SceneManager.LoadScene(2);
+            }
+        }
+
+        /// <summary>
+        /// Folds one RTT sample into the smoothed value and publishes it on the
+        /// local player so the lobby list and the server both see the same number.
+        /// </summary>
+        public static void RecordPingSample(float rttSeconds)
+        {
+            NoteServerContact();
+
+            int sample = Mathf.RoundToInt(rttSeconds * 1000f);
+            sample = Mathf.Clamp(sample, 0, ushort.MaxValue);
+
+            //exponential moving average: responsive enough to show a real change,
+            //steady enough to read
+            SmoothedPing = SmoothedPing <= 0
+                ? sample
+                : Mathf.RoundToInt(SmoothedPing * 0.7f + sample * 0.3f);
+
+            if (Globals.LocalPlayer != null)
+            {
+                Globals.LocalPlayer.Ping = SmoothedPing;
+            }
+        }
 
         /// <summary>
         /// Acts as the initializer for the Mod
@@ -96,10 +216,61 @@ namespace SRMultiplayer
         /// </summary>
         private void Update()
         {
+            SampleFps();
+
             if(Globals.GameLoaded)
             {
+                if (Globals.IsClient)
+                {
+                    //a host that was killed outright may never produce an EOS
+                    //disconnect, so silence is treated as a lost session
+                    if (LastServerContact > 0f
+                        && Time.realtimeSinceStartup - LastServerContact > ServerTimeoutSeconds)
+                    {
+                        ReturnToMainMenu("the server stopped responding");
+                        return;
+                    }
+
+                    //measure the round trip on a steady cadence; the reply also
+                    //carries the world clock, so this doubles as the fast time sync
+                    if (Time.realtimeSinceStartup - m_LastPing > PingInterval)
+                    {
+                        m_LastPing = Time.realtimeSinceStartup;
+                        new PacketPing()
+                        {
+                            ClientTime = Time.realtimeSinceStartup,
+                            ReportedPing = SmoothedPing
+                        }.Send(NetDeliveryMethod.Unreliable);
+                    }
+                }
+
                 if(Globals.IsServer)
                 {
+                    //the host is the authority, so its own ping is zero by definition
+                    if (Globals.LocalPlayer != null) Globals.LocalPlayer.Ping = 0;
+
+                    //publish everyone's ping so every client can show the lobby
+                    if (Time.realtimeSinceStartup - m_LastPingBroadcast > PingBroadcastInterval)
+                    {
+                        m_LastPingBroadcast = Time.realtimeSinceStartup;
+
+                        var pings = new List<PacketPlayerPings.PingData>();
+                        foreach (var p in Globals.Players.Values)
+                        {
+                            if (p == null) continue;
+                            pings.Add(new PacketPlayerPings.PingData()
+                            {
+                                ID = p.ID,
+                                Ping = (ushort)Mathf.Clamp(p.Ping, 0, ushort.MaxValue)
+                            });
+                        }
+                        new PacketPlayerPings()
+                        {
+                            Pings = pings,
+                            HostFps = (ushort)Mathf.Clamp(MeasuredFps, 0, ushort.MaxValue)
+                        }.SendToAll();
+                    }
+
                     //every 30 seconds  send a time updater out to all clients 
                     if(Time.time - m_LastTimeSync > 30)
                     {
@@ -184,6 +355,21 @@ namespace SRMultiplayer
             }
             Globals.Players.Clear();
 
+            //these two outlived the session and made a returning player look like
+            //they were still connected
+            Globals.EpicToPlayer.Clear();
+            Globals.PlayerToEpic.Clear();
+
+            //a lobby handle left over from a crashed session blocks the next
+            //join or host attempt entirely
+            try
+            {
+                EpicApplication.Instance?.Lobby?.ForceReset("returned to the main menu");
+            }
+            catch (Exception ex)
+            {
+                Log($"[SRMP] Error resetting lobby state: {ex}");
+            }
 
             //reset the chat 
             ChatUI.Instance.Clear();

@@ -49,6 +49,7 @@ namespace SRMultiplayer.Networking
                 case PacketType.PlayerUpgradeUnlock: OnPlayerUpgradeUnlock(new PacketPlayerUpgradeUnlock(im), player); break;
                 case PacketType.PlayerFX: OnPlayerFX(new PacketPlayerFX(im), player); break;
                 case PacketType.PlayerChat: OnPlayerChat(new PacketPlayerChat(im), player); break;
+                case PacketType.Ping: OnPing(new PacketPing(im), player); break;
                 //Actors
                 case PacketType.ActorSpawn: OnActorSpawn(new PacketActorSpawn(im), player); break;
                 case PacketType.ActorDestroy: OnActorDestroy(new PacketActorDestroy(im), player); break;
@@ -1534,6 +1535,16 @@ namespace SRMultiplayer.Networking
         {
             if (Globals.Actors.TryGetValue(packet.ID, out NetworkActor netActor))
             {
+                //Never take a client's word for destroying something it does not
+                //own. A disconnecting or misbehaving client would otherwise be
+                //able to delete the whole world out from under everyone.
+                if (netActor.Owner != 0 && netActor.Owner != player.ID)
+                {
+                    SRMP.Log($"[Server] {player.Username} tried to destroy actor {packet.ID} "
+                             + $"owned by {netActor.Owner}; ignored");
+                    return;
+                }
+
                 netActor.OnDestroyEffect();
                 Destroyer.DestroyActor(netActor.gameObject, "NetworkHandlerServer.OnActorDestroy");
 
@@ -1575,8 +1586,30 @@ namespace SRMultiplayer.Networking
         #endregion
 
         #region Players
+        /// <summary>
+        /// Replies immediately so the round trip the client measures reflects the
+        /// network, not our own scheduling, and rides the world clock along with
+        /// it. The client's own measurement is recorded for the lobby list.
+        /// </summary>
+        private static void OnPing(PacketPing packet, NetworkPlayer player)
+        {
+            if (player != null)
+            {
+                player.Ping = packet.ReportedPing;
+            }
+
+            new PacketPong()
+            {
+                ClientTime = packet.ClientTime,
+                WorldTime = SRSingleton<SceneContext>.Instance.TimeDirector.WorldTime()
+            }.Send(player, NetDeliveryMethod.Unreliable);
+        }
+
         private static void OnPlayerChat(PacketPlayerChat packet, NetworkPlayer player)
         {
+            //commands are answered privately and never relayed to the lobby
+            if (Server.ServerCommands.TryHandle(packet.message, player)) return;
+
             packet.message = player.Username + ": " + packet.message;
             packet.SendToAll();
 

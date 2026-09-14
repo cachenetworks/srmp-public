@@ -1,4 +1,5 @@
 ﻿using Epic.OnlineServices;
+using UnityEngine;
 using Epic.OnlineServices.Lobby;
 using Epic.OnlineServices.RTC;
 using System;
@@ -174,7 +175,7 @@ namespace SRMultiplayer.EpicSDK
                     Flags = (uint)JoinRoomFlags.EnableEcho
                 },
                 LocalUserId = SRSingleton<EpicApplication>.Instance.Authentication.ProductUserId,
-                MaxLobbyMembers = 16,
+                MaxLobbyMembers = (uint)Mathf.Clamp(Globals.MaxPlayers, 2, 64),
                 PermissionLevel = LobbyPermissionLevel.Joinviapresence,
                 PresenceEnabled = false,
             };
@@ -272,6 +273,9 @@ namespace SRMultiplayer.EpicSDK
             SRMP.Log($"Result -> {data.ResultCode}");
             if(data.ResultCode != Result.Success)
             {
+                //the remote side is already gone or unreachable; keeping local
+                //state would only block the next join
+                ForceReset($"leave failed ({data.ResultCode})");
                 return;
             }
 
@@ -279,6 +283,33 @@ namespace SRMultiplayer.EpicSDK
             NetworkClient = null;
             UnregisterEvents();
             LobbyId = null;
+        }
+
+        /// <summary>
+        /// Drops all local lobby state unconditionally.
+        ///
+        /// Every other path clears LobbyId only inside a success callback, so a
+        /// server that crashed or timed out leaves it set forever - and both
+        /// CreateLobby and JoinLobby then refuse with "already in a lobby",
+        /// which strands the player: they cannot rejoin and cannot host their
+        /// own world until they restart the game.
+        /// </summary>
+        public void ForceReset(string reason)
+        {
+            if (LobbyId == null && NetworkClient == null && NetworkServer == null) return;
+
+            SRMP.Log($"[Lobby] Forcing local lobby state reset: {reason}");
+
+            try { NetworkClient?.Shutdown(); } catch { }
+            try { NetworkServer?.Shutdown(); } catch { }
+
+            NetworkClient = null;
+            NetworkServer = null;
+
+            try { UnregisterEvents(); } catch { }
+
+            LobbyId = null;
+            IsLobbyOwner = false;
         }
 
         public void KickMember(ProductUserId targetUserId)
@@ -315,6 +346,7 @@ namespace SRMultiplayer.EpicSDK
             SRMP.Log($"Result -> {data.ResultCode}");
             if (data.ResultCode != Result.Success)
             {
+                ForceReset($"destroy failed ({data.ResultCode})");
                 return;
             }
 
